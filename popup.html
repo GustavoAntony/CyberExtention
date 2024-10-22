@@ -74,6 +74,25 @@
             padding: 10px;
             border-radius: 5px;
         }
+        button {
+          background-color: #007bff; /* Azul */
+          color: white; /* Texto branco */
+          border: none; /* Sem borda */
+          border-radius: 5px; /* Bordas arredondadas */
+          padding: 10px 15px; /* Espaçamento interno */
+          font-size: 16px; /* Tamanho da fonte */
+          cursor: pointer; /* Cursor de ponteiro */
+          transition: background-color 0.3s ease; /* Transição suave para mudança de cor */
+        }
+        
+        button:hover {
+            background-color: #0056b3; /* Azul mais escuro ao passar o mouse */
+        }
+        
+        button:focus {
+            outline: none; /* Remove contorno ao focar */
+        }
+        
     </style>
 </head>
 <body>
@@ -82,6 +101,6 @@
         <!-- O conteúdo será preenchido dinamicamente pelo JavaScript -->
     </div>
     <script src="popup.js"></script>
-    <p style="color: gray">Reiniciar a aba pode ser útil para atualizar os dados.</p>
+    <p style="color: gray; text-align:center">Reiniciar a aba do navegador pode ser útil para atualizar os dados.</p>
 </body>
 </html>

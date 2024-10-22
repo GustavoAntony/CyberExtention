@@ -32,7 +32,10 @@ chrome.webRequest.onBeforeRequest.addListener(
     try {
       const url = new URL(details.url);
       const domain = url.hostname;
-      const initiatorDomain = details.initiator ? new URL(details.initiator).hostname : '';
+      
+      // Usa 'initiator' ou 'originUrl' para garantir o domínio correto
+      const initiatorDomain = details.initiator ? new URL(details.initiator).hostname : 
+                             (details.originUrl ? new URL(details.originUrl).hostname : '');
 
       if (initiatorDomain && domain !== initiatorDomain) {
         tabData.thirdPartyConnections.add(domain);
@@ -59,13 +62,14 @@ chrome.cookies.onChanged.addListener(function(changeInfo) {
       tabData = initTabVulnerabilities(tabId);
     }
 
-    console.log(changeInfo);
-
     const cookieType = changeInfo.cookie.domain.startsWith('.') ? 'thirdParty' : 'firstParty';
     const cookieDuration = changeInfo.cookie.session ? 'session' : 'persistent';
 
     // Atualiza a contagem de cookies
     if (!changeInfo.removed) {
+      if (!tabData.cookies[cookieType][cookieDuration]) {
+        tabData.cookies[cookieType][cookieDuration] = 0; // Inicializa se necessário
+      }
       tabData.cookies[cookieType][cookieDuration]++;
     } else if (tabData.cookies[cookieType][cookieDuration] > 0) {
       tabData.cookies[cookieType][cookieDuration]--;
@@ -84,12 +88,22 @@ function captureCookies() {
       tabData = initTabVulnerabilities(tabId);
     }
 
+    // Reinicializa a contagem de cookies para garantir que não sejam contados duas vezes
+    tabData.cookies = {
+      firstParty: { session: 0, persistent: 0 },
+      thirdParty: { session: 0, persistent: 0 }
+    };
+
     // Obtém todos os cookies da aba ativa
     chrome.cookies.getAll({ url: tabs[0].url }, function(cookies) {
       cookies.forEach(cookie => {
-        console.log(cookie);
         const cookieType = cookie.domain.startsWith('.') ? 'thirdParty' : 'firstParty';
         const cookieDuration = cookie.session ? 'session' : 'persistent';
+        
+        // Incrementa a contagem de cookies
+        if (!tabData.cookies[cookieType][cookieDuration]) {
+          tabData.cookies[cookieType][cookieDuration] = 0; // Inicializa se necessário
+        }
         tabData.cookies[cookieType][cookieDuration]++;
       });
 
@@ -110,18 +124,11 @@ chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
         function calculateLocalStorageSize() {
           let totalSizeChars = 0;
           let totalSizeBytes = 0;
-          console.log("Tamanho do localStorage:", localStorage.length); // Log para verificar o tamanho
           for (let i = 0; i < localStorage.length; i++) {
             let key = localStorage.key(i);
             let value = localStorage.getItem(key);
-            console.log("Chave:", key, "Valor:", value); // Log de cada chave e valor
-            
-            // Calcula o tamanho em caracteres
             totalSizeChars += key.length + value.length;
-
-            // Calcula o tamanho em bytes usando Blob
-            let sizeInBytes = new Blob([key + value]).size;
-            totalSizeBytes += sizeInBytes;
+            totalSizeBytes += new Blob([key + value]).size;
           }
           return { totalSizeChars: totalSizeChars, totalSizeBytes: totalSizeBytes };
         }
@@ -145,9 +152,293 @@ chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
   }
 });
 
-// Script de injeção para verificações do cliente
+
+
 const injectScript = `
-// ... seu código de injeção aqui ...
+// Verificação de conexões de terceiros
+(function() {
+  const originalFetch = window.fetch;
+  const originalXhrOpen = XMLHttpRequest.prototype.open;
+
+  // Hook para fetch API
+  window.fetch = function(...args) {
+    const url = new URL(args[0]);
+    const domain = url.hostname;
+    const initiatorDomain = window.location.hostname;
+    
+    if (domain !== initiatorDomain) {
+      console.log("Third-party connection detected via fetch:", domain);
+      window.postMessage({
+        type: 'THIRD_PARTY_CONNECTION',
+        detail: { method: 'fetch', domain: domain }
+      }, '*');
+    }
+    
+    return originalFetch.apply(this, args);
+  };
+
+  // Hook para XMLHttpRequest
+  XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
+    const parsedUrl = new URL(url);
+    const domain = parsedUrl.hostname;
+    const initiatorDomain = window.location.hostname;
+
+    if (domain !== initiatorDomain) {
+      console.log("Third-party connection detected via XHR:", domain);
+      window.postMessage({
+        type: 'THIRD_PARTY_CONNECTION',
+        detail: { method: 'xhr', domain: domain }
+      }, '*');
+    }
+
+    return originalXhrOpen.apply(this, arguments);
+  };
+})();
+
+// Verificação aprimorada de Canvas Fingerprinting
+(function() {
+  let canvasOperations = {
+    toDataURL: 0,
+    getImageData: 0,
+    fillText: 0,
+    font: 0
+  };
+  
+  const resetCounters = () => {
+    setTimeout(() => {
+      canvasOperations = {
+        toDataURL: 0,
+        getImageData: 0,
+        fillText: 0,
+        font: 0
+      };
+    }, 1000);
+  };
+
+  // Monitor toDataURL
+  const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+  HTMLCanvasElement.prototype.toDataURL = function(...args) {
+    canvasOperations.toDataURL++;
+    
+    if (canvasOperations.toDataURL > 2) {
+      window.postMessage({
+        type: 'CANVAS_FINGERPRINT_DETECTED',
+        detail: 'Multiple toDataURL calls detected'
+      }, '*');
+    }
+    
+    const result = originalToDataURL.apply(this, args);
+    resetCounters();
+    return result;
+  };
+
+  // Monitor getContext and its operations
+  const originalGetContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function(contextType, ...args) {
+    const context = originalGetContext.call(this, contextType, ...args);
+    
+    if (contextType === '2d') {
+      // Monitor fillText
+      const originalFillText = context.fillText;
+      context.fillText = function(text, x, y, maxWidth) {
+        canvasOperations.fillText++;
+        
+        // Detect common fingerprinting patterns
+        const suspiciousPatterns = [
+          text.includes('👆'),
+          text.includes('mmmmm'),
+          text.includes('Cwm fjordbank'),
+          text.includes('Arial'),
+          text.length === 1,
+          typeof text === 'number'
+        ];
+        
+        if (suspiciousPatterns.some(pattern => pattern) || canvasOperations.fillText > 3) {
+          window.postMessage({
+            type: 'CANVAS_FINGERPRINT_DETECTED',
+            detail: 'Suspicious fillText pattern detected'
+          }, '*');
+        }
+        
+        return originalFillText.apply(this, arguments);
+      };
+
+      // Monitor getImageData
+      const originalGetImageData = context.getImageData;
+      context.getImageData = function(...args) {
+        canvasOperations.getImageData++;
+        
+        if (canvasOperations.getImageData > 2) {
+          window.postMessage({
+            type: 'CANVAS_FINGERPRINT_DETECTED',
+            detail: 'Multiple getImageData calls detected'
+          }, '*');
+        }
+        
+        return originalGetImageData.apply(this, arguments);
+      };
+
+      // Monitor font property
+      let fontDescriptor = Object.getOwnPropertyDescriptor(context.__proto__, 'font');
+      Object.defineProperty(context, 'font', {
+        get: function() {
+          return fontDescriptor.get.call(this);
+        },
+        set: function(value) {
+          canvasOperations.font++;
+          
+          if (canvasOperations.font > 3) {
+            window.postMessage({
+              type: 'CANVAS_FINGERPRINT_DETECTED',
+              detail: 'Multiple font changes detected'
+            }, '*');
+          }
+          
+          return fontDescriptor.set.call(this, value);
+        }
+      });
+    }
+    
+    return context;
+  };
+})();
+
+// Verificação aprimorada de Hijacking
+(function() {
+  let suspiciousOperations = {
+    eval: 0,
+    documentWrite: 0,
+    locationChanges: 0,
+    windowOpen: 0
+  };
+
+  const DETECTION_WINDOW = 1000; // 1 second window
+  const SUSPICIOUS_THRESHOLD = 3;
+
+  function resetOperations() {
+    setTimeout(() => {
+      suspiciousOperations = {
+        eval: 0,
+        documentWrite: 0,
+        locationChanges: 0,
+        windowOpen: 0
+      };
+    }, DETECTION_WINDOW);
+  }
+
+  function detectSuspiciousPattern(operation, detail) {
+    suspiciousOperations[operation]++;
+    
+    if (suspiciousOperations[operation] >= SUSPICIOUS_THRESHOLD) {
+      window.postMessage({
+        type: 'POTENTIAL_HIJACKING',
+        detail: detail
+      }, '*');
+      resetOperations();
+    }
+  }
+
+  // Monitor eval
+  const originalEval = window.eval;
+  window.eval = function(code) {
+    detectSuspiciousPattern('eval', {
+      type: 'eval',
+      message: 'Multiple eval calls detected',
+      sample: code.substring(0, 100) // Capture first 100 chars for analysis
+    });
+    
+    // Detect suspicious patterns in eval code
+    const suspiciousPatterns = [
+      /document\.cookie/i,
+      /localStorage/i,
+      /sessionStorage/i,
+      /window\.location/i,
+      /\\.\\+/  // Regex for string concatenation often used in obfuscation
+    ];
+    
+    if (suspiciousPatterns.some(pattern => pattern.test(code))) {
+      window.postMessage({
+        type: 'POTENTIAL_HIJACKING',
+        detail: 'Suspicious eval content detected'
+      }, '*');
+    }
+    
+    return originalEval.apply(this, arguments);
+  };
+
+  // Monitor document.write
+  const originalWrite = document.write;
+  const originalWriteln = document.writeln;
+  
+  document.write = function(content) {
+    detectSuspiciousPattern('documentWrite', {
+      type: 'write',
+      message: 'document.write detected',
+      content: content.substring(0, 100)
+    });
+    
+    // Check for suspicious content
+    if (content.includes('<script') || content.includes('javascript:')) {
+      window.postMessage({
+        type: 'POTENTIAL_HIJACKING',
+        detail: 'Suspicious document.write content detected'
+      }, '*');
+    }
+    
+    return originalWrite.apply(this, arguments);
+  };
+  
+  document.writeln = function(content) {
+    detectSuspiciousPattern('documentWrite', {
+      type: 'writeln',
+      message: 'document.writeln detected',
+      content: content.substring(0, 100)
+    });
+    return originalWriteln.apply(this, arguments);
+  };
+
+  // Monitor location changes
+  ['assign', 'replace', 'href'].forEach(prop => {
+    let original = Object.getOwnPropertyDescriptor(window.location, prop);
+    if (original && original.set) {
+      Object.defineProperty(window.location, prop, {
+        set: function(value) {
+          detectSuspiciousPattern('locationChanges', {
+            type: 'location',
+            method: prop,
+            destination: value
+          });
+          return original.set.call(this, value);
+        },
+        get: original.get
+      });
+    }
+  });
+
+  // Monitor window.open
+  const originalOpen = window.open;
+  window.open = function(url, name, specs) {
+    detectSuspiciousPattern('windowOpen', {
+      type: 'window.open',
+      url: url,
+      name: name
+    });
+    
+    // Check for suspicious patterns in popup specs
+    if (specs && (
+      specs.includes('fullscreen') ||
+      specs.includes('width=screen.width') ||
+      specs.includes('height=screen.height')
+    )) {
+      window.postMessage({
+        type: 'POTENTIAL_HIJACKING',
+        detail: 'Suspicious popup parameters detected'
+      }, '*');
+    }
+    
+    return originalOpen.apply(this, arguments);
+  };
+})();
 `;
 
 // Cálculo de pontuação
@@ -166,22 +457,41 @@ function getPrivacyScoreLetter(score) {
 function calculatePrivacyScore(tabData) {
   let score = 100;
 
-  // Penalizações
-  score -= Math.min(tabData.thirdPartyConnections.size * 5, 30);
-  
+  // Penalizações para conexões de terceiros
+  let thirdPartyPenalty = Math.min(tabData.thirdPartyConnections.size * 2, 20);
+  score -= thirdPartyPenalty;
+
+  // Penalizações para cookies
   const totalCookies = Object.values(tabData.cookies).reduce((sum, type) => 
     sum + Object.values(type).reduce((s, count) => s + (count || 0), 0), 0);
-  score -= Math.min(totalCookies * 2, 20);
-  
-  score -= Math.min(Math.floor(tabData.localStorageData / 1024), 10);
-  if (tabData.canvasFingerprint) score -= 20;
-  if (tabData.potentialHijacking) score -= 20;
+  let cookiesPenalty = Math.min(totalCookies * 1, 20);
+  score -= cookiesPenalty;
+
+  // Penalizações para localStorage
+  let localStoragePenalty = Math.min(Math.floor(tabData.localStorageData / 1024) * 3, 15);
+  score -= localStoragePenalty;
+
+  // Penalizações por canvas fingerprinting
+  if (tabData.canvasFingerprint) {
+    score -= 10;
+  }
+
+  // Penalizações por potencial hijacking
+  if (tabData.potentialHijacking) {
+    score -= 15;
+  }
+
+  // Limitar a pontuação a um mínimo de 0
+  let finalScore = Math.max(0, score);
+  let letterScore = getPrivacyScoreLetter(finalScore);
 
   return {
-    numericScore: Math.max(0, score),
-    letterScore: getPrivacyScoreLetter(Math.max(0, score))
+    numericScore: finalScore,
+    letterScore: letterScore
   };
 }
+
+
 
 // Handler de mensagens
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
