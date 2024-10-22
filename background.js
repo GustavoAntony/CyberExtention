@@ -1,116 +1,109 @@
-let vulnerabilities = {};
+let vulnerabilities = new Map();
 
 function initTabVulnerabilities(tabId) {
-  vulnerabilities[tabId] = {
-    thirdPartyConnections: new Set(),
-    cookies: {
-      firstParty: { session: 0, persistent: 0 },
-      thirdParty: { session: 0, persistent: 0 }
-    },
-    localStorageData: 0,
-    localStorageDataSize: 0,
-    canvasFingerprint: false,
-    potentialHijacking: false
-  };
+  if (!vulnerabilities.has(tabId)) {
+    vulnerabilities.set(tabId, {
+      thirdPartyConnections: new Set(),
+      cookies: {
+        firstParty: { session: 0, persistent: 0 },
+        thirdParty: { session: 0, persistent: 0 },
+        total: 0 // Adicionado para contar o total de cookies
+      },
+      localStorageData: 0,
+      localStorageDataSize: 0,
+      canvasFingerprint: false,
+      potentialHijacking: false,
+      lastUpdate: Date.now()
+    });
+  }
+  return vulnerabilities.get(tabId);
 }
 
-// Detecta conexões de terceira parte
+// Listener para requisições
 chrome.webRequest.onBeforeRequest.addListener(
   function(details) {
     if (details.tabId === -1) return;
-    if (!vulnerabilities[details.tabId]) initTabVulnerabilities(details.tabId);
 
-    let url = new URL(details.url);
-    let domain = url.hostname;
-
-    if (details.initiator && !details.initiator.includes(domain)) {
-      vulnerabilities[details.tabId].thirdPartyConnections.add(domain);
+    let tabData = vulnerabilities.get(details.tabId);
+    if (!tabData) {
+      tabData = initTabVulnerabilities(details.tabId);
     }
 
-    // Detecção de potencial hijacking (exemplo simples)
-    if (url.pathname.includes('eval(') || url.pathname.includes('document.write(')) {
-      vulnerabilities[details.tabId].potentialHijacking = true;
+    try {
+      const url = new URL(details.url);
+      const domain = url.hostname;
+      const initiatorDomain = details.initiator ? new URL(details.initiator).hostname : '';
+
+      if (initiatorDomain && domain !== initiatorDomain) {
+        tabData.thirdPartyConnections.add(domain);
+      }
+
+      if (url.pathname.includes('eval(') || url.pathname.includes('document.write(')) {
+        tabData.potentialHijacking = true;
+      }
+    } catch (e) {
+      console.error('Error processing request:', e);
     }
   },
   { urls: ["<all_urls>"] }
 );
 
-// Detecta cookies
+// Listener de cookies otimizado
 chrome.cookies.onChanged.addListener(function(changeInfo) {
-  chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-    if (tabs[0] && tabs[0].url.includes(changeInfo.cookie.domain)) {
-      let tabId = tabs[0].id;
-      if (!vulnerabilities[tabId]) initTabVulnerabilities(tabId);
+  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+    if (!tabs[0]) return;
 
-      let cookieType = changeInfo.cookie.domain.startsWith('.') ? 'thirdParty' : 'firstParty';
-      let cookieDuration = changeInfo.cookie.session ? 'session' : 'persistent';
+    const tabId = tabs[0].id;
+    let tabData = vulnerabilities.get(tabId);
+    if (!tabData) {
+      tabData = initTabVulnerabilities(tabId);
+    }
 
-      if (!changeInfo.removed) {
-        vulnerabilities[tabId].cookies[cookieType][cookieDuration]++;
-      }
+    console.log(changeInfo);
+
+    const cookieType = changeInfo.cookie.domain.startsWith('.') ? 'thirdParty' : 'firstParty';
+    const cookieDuration = changeInfo.cookie.session ? 'session' : 'persistent';
+
+    // Atualiza a contagem de cookies
+    if (!changeInfo.removed) {
+      tabData.cookies[cookieType][cookieDuration]++;
+    } else if (tabData.cookies[cookieType][cookieDuration] > 0) {
+      tabData.cookies[cookieType][cookieDuration]--;
     }
   });
 });
 
-chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
-  if (changeInfo.status === 'complete') {
-    chrome.tabs.executeScript(tabId, {
-      code: `
-        // Função para verificar se o canvas está sendo usado para fingerprinting
-        function isCanvasFingerprinting() {
-          let canvas = document.createElement('canvas');
-          let context = canvas.getContext('2d');
+// Função para capturar todos os cookies da aba ativa
+function captureCookies() {
+  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+    if (!tabs[0]) return;
 
-          // Desenha algo específico, normalmente usado em fingerprinting
-          context.textBaseline = "top";
-          context.font = "14px 'Arial'";
-          context.fillStyle = "#f60";
-          context.fillRect(125, 1, 62, 20);
-          context.fillStyle = "#069";
-          context.fillText("fingerprinting", 2, 15);
-          context.strokeStyle = "rgba(102, 204, 0, 0.7)";
-          context.strokeRect(125, 1, 62, 20);
+    const tabId = tabs[0].id;
+    let tabData = vulnerabilities.get(tabId);
+    if (!tabData) {
+      tabData = initTabVulnerabilities(tabId);
+    }
 
-          // Obtem os dados do canvas
-          let dataURL = canvas.toDataURL();
+    // Obtém todos os cookies da aba ativa
+    chrome.cookies.getAll({ url: tabs[0].url }, function(cookies) {
+      cookies.forEach(cookie => {
+        console.log(cookie);
+        const cookieType = cookie.domain.startsWith('.') ? 'thirdParty' : 'firstParty';
+        const cookieDuration = cookie.session ? 'session' : 'persistent';
+        tabData.cookies[cookieType][cookieDuration]++;
+      });
 
-          // Verifica se foi alterado ou manipulado
-          return dataURL;
-        }
-
-        let canvasFingerprinting = false;
-        let originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-
-        HTMLCanvasElement.prototype.toDataURL = function() {
-          let dataURL = isCanvasFingerprinting();
-          // Condição para detectar fingerprinting baseado em manipulação de canvas
-          if (dataURL) {
-            canvasFingerprinting = true;
-          }
-          return originalToDataURL.apply(this, arguments);
-        };
-
-        // Simula uma ação que poderia usar canvas fingerprinting
-        let canvas = document.createElement('canvas');
-        canvas.getContext('2d');
-        canvas.toDataURL();
-        
-        // Restaura o método original
-        HTMLCanvasElement.prototype.toDataURL = originalToDataURL;
-        
-        // Retorna o status da detecção
-        ({ canvasFingerprinting: canvasFingerprinting });
-      `
-    }, function(results) {
-      if (results && results[0]) {
-        vulnerabilities[tabId].canvasFingerprint = results[0].canvasFingerprinting;
-      }
+      console.log(`Cookies capturados para a aba ${tabId}:`, tabData.cookies);
     });
-  }
-});
+  });
+}
 
+// Chama a função captureCookies quando a aba é atualizada ou ativada
 chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
   if (changeInfo.status === 'complete') {
+    captureCookies(); // Captura cookies após o carregamento da aba
+
+    // Adiciona o listener para calcular o tamanho do localStorage
     chrome.tabs.executeScript(tabId, {
       code: `
         // Função para calcular o tamanho do localStorage
@@ -144,72 +137,20 @@ chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
       `
     }, function(results) {
       if (results && results[0]) {
-        vulnerabilities[tabId].localStorageData = results[0].localStorageSizeChars;
-        vulnerabilities[tabId].localStorageDataSize = results[0].localStorageSizeBytes;
+        let tabData = initTabVulnerabilities(tabId); // Inicializa os dados da aba, se necessário
+        tabData.localStorageData = results[0].localStorageSizeChars;
+        tabData.localStorageDataSize = results[0].localStorageSizeBytes;
       }
     });
   }
 });
 
+// Script de injeção para verificações do cliente
+const injectScript = `
+// ... seu código de injeção aqui ...
+`;
 
-// // Detecta localStorage e Canvas Fingerprinting
-// chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
-//   if (changeInfo.status === 'complete') {
-//     chrome.tabs.executeScript(tabId, {
-//       code: `
-//         // Função para calcular o tamanho do localStorage
-//         function calculateLocalStorageSize() {
-//           let totalSize = 0;
-//           console.log("Tamanho do localStorage:", localStorage.length); // Log para verificar o tamanho
-//           for (let i = 0; i < localStorage.length; i++) {
-//             let key = localStorage.key(i);
-//             let value = localStorage.getItem(key);
-//             console.log("Chave:", key, "Valor:", value); // Log de cada chave e valor
-//             totalSize += key.length + value.length; // Tamanho total em caracteres
-//           }
-//           return totalSize; // Retorna tamanho total em caracteres
-//         }
-
-//         // Detecção de localStorage
-//         let localStorageSize = calculateLocalStorageSize();
-        
-//         // Detecção simples de Canvas Fingerprinting
-//         let canvasFingerprinting = false;
-//         let originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-        
-//         HTMLCanvasElement.prototype.toDataURL = function() {
-//           canvasFingerprinting = true;
-//           return originalToDataURL.apply(this, arguments);
-//         };
-        
-//         // Simula uma ação que poderia usar canvas fingerprinting
-//         let canvas = document.createElement('canvas');
-//         canvas.getContext('2d');
-//         canvas.toDataURL();
-        
-//         // Restaura o método original
-//         HTMLCanvasElement.prototype.toDataURL = originalToDataURL;
-        
-//         // Retorna os resultados em um objeto
-//         ({ localStorageSize: localStorageSize, canvasFingerprinting: canvasFingerprinting });
-//       `
-//     }, function(results) {
-//       if (results && results[0]) {
-//         vulnerabilities[tabId].localStorageData = results[0].localStorageSize;
-//         vulnerabilities[tabId].canvasFingerprint = results[0].canvasFingerprinting;
-//       }
-//     });
-//   }
-// });
-
-
-
-// Limpa dados quando uma tab é fechada
-chrome.tabs.onRemoved.addListener(function(tabId) {
-  delete vulnerabilities[tabId];
-});
-
-// Converte a pontuação numérica em classificação de letras
+// Cálculo de pontuação
 function getPrivacyScoreLetter(score) {
   if (score >= 90) return 'A+';
   if (score >= 80) return 'A';
@@ -222,47 +163,55 @@ function getPrivacyScoreLetter(score) {
   return 'F';
 }
 
-// Calcula a pontuação de privacidade
 function calculatePrivacyScore(tabData) {
   let score = 100;
 
-  // Penaliza por conexões de terceiros
+  // Penalizações
   score -= Math.min(tabData.thirdPartyConnections.size * 5, 30);
-
-  // Penaliza por cookies
-  let totalCookies = Object.values(tabData.cookies).reduce((sum, type) => 
+  
+  const totalCookies = Object.values(tabData.cookies).reduce((sum, type) => 
     sum + Object.values(type).reduce((s, count) => s + (count || 0), 0), 0);
   score -= Math.min(totalCookies * 2, 20);
-
-  // Penaliza por uso de localStorage
+  
   score -= Math.min(Math.floor(tabData.localStorageData / 1024), 10);
-
-  // Penaliza por Canvas Fingerprinting
   if (tabData.canvasFingerprint) score -= 20;
-
-  // Penaliza por potencial hijacking
   if (tabData.potentialHijacking) score -= 20;
 
-  // Retorna a classificação em letras
   return {
     numericScore: Math.max(0, score),
     letterScore: getPrivacyScoreLetter(Math.max(0, score))
   };
 }
 
-
-// Envia as vulnerabilidades e a pontuação para o popup quando solicitado
+// Handler de mensagens
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'getVulnerabilities') {
     chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-      if (tabs[0] && vulnerabilities[tabs[0].id]) {
-        let tabData = vulnerabilities[tabs[0].id];
-        let privacyScore = calculatePrivacyScore(tabData);
-        sendResponse({...tabData, privacyScore: privacyScore});
-      } else {
+      if (!tabs[0]) {
         sendResponse({});
+        return;
       }
+      
+      const tabId = tabs[0].id;
+      let tabData = vulnerabilities.get(tabId);
+      
+      if (!tabData) {
+        tabData = initTabVulnerabilities(tabId);
+        checkTabPrivacy(tabId);
+      }
+
+      const response = {
+        thirdPartyConnections: Array.from(tabData.thirdPartyConnections),
+        cookies: tabData.cookies,
+        localStorageData: tabData.localStorageData,
+        localStorageDataSize: tabData.localStorageDataSize,
+        canvasFingerprint: tabData.canvasFingerprint,
+        potentialHijacking: tabData.potentialHijacking,
+        privacyScore: calculatePrivacyScore(tabData)
+      };
+
+      sendResponse(response);
     });
-    return true;  // Indica que a resposta será assíncrona
+    return true;
   }
 });

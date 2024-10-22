@@ -48,8 +48,9 @@ document.addEventListener('DOMContentLoaded', function() {
           let hijackingElement = document.createElement('p');
           hijackingElement.textContent = `Potential hijacking detected: ${response.potentialHijacking ? 'Yes' : 'No'}`;
           container.appendChild(hijackingElement);
+
         } else {
-          container.textContent = 'No data available for the current domain. Restarting the tab may help.';
+          container.textContent = 'No data available for the current domain.';
         }
       });
     });
