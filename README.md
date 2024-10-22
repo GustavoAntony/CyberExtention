@@ -34,3 +34,6 @@ O sistema considera os seguintes fatores, cada um com uma penalização específ
 - **Descrição**: Detecção de potenciais ataques de hijacking.
 - **Penalização**: 15 pontos se detectado.
 - **Justificativa**: Ataques de hijacking representam um risco grave, pois podem comprometer a segurança e a privacidade do usuário, permitindo que um atacante tenha controle sobre a sessão do navegador. Essa penalização reflete a gravidade e a urgência da vulnerabilidade, já que a proteção contra tais ameaças é crucial para a segurança do usuário.
+
+
+A construção desta API contou com o suporte do ChatGPT, uma ferramenta de inteligência artificial desenvolvida pela OpenAI, utilizada para fornecer sugestões, otimizações e esclarecimentos em diversas etapas do desenvolvimento, incluindo a definição de estrutura de dados, lógica de manipulação de cookies e boas práticas de programação.
