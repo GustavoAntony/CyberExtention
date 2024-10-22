@@ -1,19 +1,22 @@
 {
-    "manifest_version": 2,
-    "name": "Borderify",
-    "version": "1.0",
-  
-    "description": "Adiciona uma borda vermelha a todas as páginas da Web correspondentes a mozilla.org.",
-  
-    "icons": {
-      "48": "icons/border-48.png"
-    },
-  
-    "content_scripts": [
-      {
-        "matches": ["*://*.mozilla.org/*"],
-        "js": ["scripts.js"]
-      }
-    ]
+  "manifest_version": 2,
+  "name": "Privacy Analyzer",
+  "version": "1.0",
+  "description": "Analyzes website privacy practices",
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "<all_urls>",
+    "cookies",
+    "tabs",
+    "activeTab",
+    "storage"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+  "browser_action": {
+    "default_popup": "popup.html"
   }
-  
+}
